@@ -29,6 +29,34 @@ Example output: ["interest rates", "deficit", "spending"]
 Question: {question}
 Output:"""
 
+RANK_PROMPT = """\
+You are a fiscal-data routing assistant. Given a user question and a list of candidate \
+API endpoints, return ONLY the endpoints genuinely needed to answer the question.
+
+Rules:
+- Return the minimum number of endpoints required — if one endpoint clearly answers the question, return only that one.
+- Return at most 5 endpoints.
+- Do not pad the list. Only include endpoints that are directly relevant.
+
+You must respond with a raw JSON array of endpoint path strings and nothing else.
+Do not use markdown. Do not use code fences. Do not explain.
+Your entire response must be parseable by JSON.loads().
+
+Example — clear single-dataset question:
+  Question: "How much has the national debt changed in the last 5 years?"
+  Output: ["v2/accounting/od/debt_to_penny"]
+
+Example — multi-dataset question:
+  Question: "Compare interest rates and deficit spending since 2020."
+  Output: ["v2/accounting/od/avg_interest_rates", "v1/accounting/mts/mts_table_5"]
+
+User question: {question}
+
+Candidate endpoints:
+{endpoints}
+
+Output:"""
+
 CHART_SPEC_PROMPT = """\
 You are a fiscal-data analyst. The user has asked a question about U.S. Treasury data.
 Below is a filtered list of the most relevant API endpoints and their fields.
@@ -155,6 +183,45 @@ class AgentService:
         except json.JSONDecodeError:
             return []
 
+    def rank_endpoints(self, question: str, candidates: list[dict], session_id: str) -> list[dict]:
+        """
+        Use Haiku to pick the 5 most relevant endpoints from the candidate list.
+        Returns a filtered subset of the candidates dicts (preserving full field info).
+        Falls back to the full candidate list if ranking fails.
+        """
+        endpoint_lines = "\n".join(
+            f"- {d['endpoint']}: {d['title']}" for d in candidates
+        )
+        rank_prompt = RANK_PROMPT.format(question=question, endpoints=endpoint_lines)
+
+        response = self.client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=256,
+            messages=[{"role": "user", "content": rank_prompt}],
+        )
+        text = "".join(
+            block.text for block in response.content if block.type == "text"
+        ).strip()
+        token_logger.record_stage(
+            session_id=session_id,
+            stage="endpoint_ranking",
+            model="claude-haiku-4-5-20251001",
+            input_tokens=response.usage.input_tokens,
+            output_tokens=response.usage.output_tokens,
+            prompt=rank_prompt,
+            response=text,
+        )
+
+        try:
+            ranked_paths = json.loads(text)
+            if not isinstance(ranked_paths, list):
+                return candidates
+            path_set = set(ranked_paths)
+            ranked = [d for d in candidates if d["endpoint"] in path_set]
+            return ranked if ranked else candidates
+        except json.JSONDecodeError:
+            return candidates
+
     # ── Chart spec (Option A — structured JSON response) ────────
 
     def build_chart_spec(self, question: str) -> tuple[dict, str]:
@@ -180,9 +247,12 @@ class AgentService:
         if not relevant_metadata:
             return {"error": "Could not find any relevant datasets for that question."}, session_id
 
+        # Stage 3: rank down to top 5 with a second cheap Haiku call
+        ranked_metadata = self.rank_endpoints(question, relevant_metadata, session_id)
+
         prompt = CHART_SPEC_PROMPT.format(
             today=date.today().isoformat(),
-            metadata=json.dumps(relevant_metadata, indent=2),
+            metadata=json.dumps(ranked_metadata, indent=2),
             question=question,
         )
 
