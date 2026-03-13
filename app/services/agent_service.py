@@ -4,8 +4,55 @@ for U.S. fiscal data and optional tool-use for live data queries.
 """
 
 import json
+from datetime import date
 import anthropic
 from app.services.fiscal_data import FiscalDataClient
+from app.services.metadata_service import search
+from app.services import token_logger
+
+KEYWORD_PROMPT = """\
+Extract the minimum number of keywords needed to identify the relevant U.S. Treasury \
+financial dataset for the question below. Be as concise as possible — if one or two \
+keywords are sufficient, use only those. Only add more keywords if the question is \
+ambiguous or covers multiple distinct topics.
+
+You must respond with a raw JSON array of lowercase strings and nothing else.
+Do not use markdown. Do not use code fences. Do not explain.
+Your entire response must be parseable by JSON.loads().
+
+Example input: How much has the national debt grown in the last 5 years?
+Example output: ["national debt"]
+
+Example input: Compare interest rates and deficit spending since 2020.
+Example output: ["interest rates", "deficit", "spending"]
+
+Question: {question}
+Output:"""
+
+CHART_SPEC_PROMPT = """\
+You are a fiscal-data analyst. The user has asked a question about U.S. Treasury data.
+Below is a filtered list of the most relevant API endpoints and their fields.
+
+Today's date is {today}. Use this to calculate exact start dates for any time range the user mentions.
+
+Your job is to respond with ONLY a valid JSON object — no markdown, no explanation — with these keys:
+  blurb     : string  — a clear, concise plain-language answer to the user's question (2-4 sentences)
+  endpoint  : string  — the API endpoint path to query (e.g. v2/accounting/od/debt_to_penny)
+  x_column  : string  — the field name to use as the x axis
+  y_column  : string  — the field name to use as the y axis
+  filters   : string  — a Fiscal Data filter expression covering EXACTLY the time range the user asked for,
+                        in the format record_date:gte:YYYY-MM-DD. Calculate the start date yourself from
+                        today's date. If the user mentions no time range, return an empty string.
+  sort      : string  — sort expression for time-series data (e.g. record_date)
+
+IMPORTANT: The filter is the only thing controlling how much data is returned. Be precise.
+
+METADATA:
+{metadata}
+
+USER QUESTION:
+{question}
+"""
 
 
 SYSTEM_PROMPT = """\
@@ -77,6 +124,91 @@ class AgentService:
         )
         self.model = "claude-sonnet-4-20250514"
 
+    # ── Keyword extraction ───────────────────────────────────
+
+    def extract_keywords(self, question: str, session_id: str) -> list[str]:
+        """
+        Use Haiku to pull search keywords from the user's question.
+        Returns a list of lowercase keyword strings.
+        """
+        keyword_prompt = KEYWORD_PROMPT.format(question=question)
+        response = self.client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=128,
+            messages=[{"role": "user", "content": keyword_prompt}],
+        )
+        text = "".join(
+            block.text for block in response.content if block.type == "text"
+        ).strip()
+        token_logger.record_stage(
+            session_id=session_id,
+            stage="keyword_extraction",
+            model="claude-haiku-4-5-20251001",
+            input_tokens=response.usage.input_tokens,
+            output_tokens=response.usage.output_tokens,
+            prompt=keyword_prompt,
+            response=text,
+        )
+        try:
+            keywords = json.loads(text)
+            return keywords if isinstance(keywords, list) else []
+        except json.JSONDecodeError:
+            return []
+
+    # ── Chart spec (Option A — structured JSON response) ────────
+
+    def build_chart_spec(self, question: str) -> tuple[dict, str]:
+        """
+        Two-stage pipeline:
+          1. Extract keywords from the question (Haiku, cheap).
+          2. Filter metadata down to the most relevant endpoints.
+          3. Ask Sonnet to pick the best endpoint/columns and write a blurb.
+
+        Returns (spec_dict, session_id).
+        On failure spec_dict contains {"error": "..."}.
+        """
+        session_id = token_logger.start_session(question)
+        keywords = self.extract_keywords(question, session_id)
+        relevant_metadata = search(keywords) if keywords else []
+
+        token_logger.record_search(
+            session_id=session_id,
+            keywords=keywords,
+            matched_endpoints=[d["endpoint"] for d in relevant_metadata],
+        )
+
+        if not relevant_metadata:
+            return {"error": "Could not find any relevant datasets for that question."}, session_id
+
+        prompt = CHART_SPEC_PROMPT.format(
+            today=date.today().isoformat(),
+            metadata=json.dumps(relevant_metadata, indent=2),
+            question=question,
+        )
+
+        response = self.client.messages.create(
+            model=self.model,
+            max_tokens=1024,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = "".join(
+            block.text for block in response.content if block.type == "text"
+        ).strip()
+        token_logger.record_stage(
+            session_id=session_id,
+            stage="chart_spec",
+            model=self.model,
+            input_tokens=response.usage.input_tokens,
+            output_tokens=response.usage.output_tokens,
+            prompt=prompt,
+            response=text,
+        )
+
+        try:
+            return json.loads(text), session_id
+        except json.JSONDecodeError:
+            return {"error": f"Agent returned invalid JSON: {text}"}, session_id
+
     # ── Synchronous (non-streaming) ──────────────────────────
 
     def answer(self, message: str, history: list[dict]) -> dict:
@@ -88,6 +220,16 @@ class AgentService:
             system=SYSTEM_PROMPT,
             tools=TOOLS,
             messages=messages,
+        )
+        response_text = "".join(
+            block.text for block in response.content if block.type == "text"
+        )
+        token_logger.record(
+            model=self.model,
+            input_tokens=response.usage.input_tokens,
+            output_tokens=response.usage.output_tokens,
+            prompt=json.dumps(messages),
+            response=response_text,
         )
 
         # Handle tool-use loop (single round for now)
@@ -138,13 +280,24 @@ class AgentService:
         messages.append({"role": "assistant", "content": response.content})
         messages.append({"role": "user", "content": tool_results})
 
-        return self.client.messages.create(
+        followup = self.client.messages.create(
             model=self.model,
             max_tokens=4096,
             system=SYSTEM_PROMPT,
             tools=TOOLS,
             messages=messages,
         )
+        followup_text = "".join(
+            block.text for block in followup.content if block.type == "text"
+        )
+        token_logger.record(
+            model=self.model,
+            input_tokens=followup.usage.input_tokens,
+            output_tokens=followup.usage.output_tokens,
+            prompt=json.dumps(messages),
+            response=followup_text,
+        )
+        return followup
 
     def _run_fiscal_query(self, tool_input: dict) -> dict:
         endpoint = tool_input.get("endpoint", "")

@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Admin — Prompt Log{% endblock %}
+
+{% block content %}
+<section class="hero">
+  <h1>Prompt Log</h1>
+  <p>All user questions since last restart.</p>
+</section>
+
+<section class="admin-stats">
+  {% for model, counts in stats.items() %}
+  <div class="stat-card">
+    <div class="stat-model">{{ model }}</div>
+    <div class="stat-row"><span>Requests</span><span>{{ counts.requests }}</span></div>
+    <div class="stat-row"><span>Input tokens</span><span>{{ "{:,}".format(counts.total_input_tokens) }}</span></div>
+    <div class="stat-row"><span>Output tokens</span><span>{{ "{:,}".format(counts.total_output_tokens) }}</span></div>
+  </div>
+  {% endfor %}
+</section>
+
+{% if sessions %}
+<section class="admin-table-wrap">
+  <table class="data-table admin-table">
+    <thead>
+      <tr>
+        <th>Timestamp</th>
+        <th>Question</th>
+        <th>Stages</th>
+        <th>Input tokens</th>
+        <th>Output tokens</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for s in sessions %}
+      <tr>
+        <td class="mono">{{ s.timestamp[:19].replace("T", " ") }}</td>
+        <td>{{ s.question }}</td>
+        <td>{{ s.stages | length }}</td>
+        <td>{{ "{:,}".format(s.total_input_tokens) }}</td>
+        <td>{{ "{:,}".format(s.total_output_tokens) }}</td>
+        <td><a class="admin-link" href="/admin/prompt/{{ s.id }}">View →</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% else %}
+<p class="loading" style="margin-top:2rem;">No prompts recorded yet. Ask a question on the <a href="/chat" style="color:#fff;">Chat</a> page.</p>
+{% endif %}
+{% endblock %}

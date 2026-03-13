@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}Chat — Fiscal Data{% endblock %}
+
+{% block content %}
+<section class="hero">
+  <h1>Ask a Question</h1>
+  <p>Ask anything about U.S. fiscal data and the agent will find the right dataset and visualise it.</p>
+</section>
+
+<form class="chat-form" method="POST" action="/chat">
+  <input
+    type="text"
+    name="question"
+    class="chat-input"
+    placeholder="e.g. How has the national debt changed over the last 5 years?"
+    value="{{ question or '' }}"
+    autocomplete="off"
+    required
+  />
+  <button type="submit" class="chat-submit">Ask</button>
+</form>
+
+{% if error %}
+<div class="chat-error">{{ error }}</div>
+{% endif %}
+
+{% if result %}
+<section class="chat-result">
+  <div class="chat-blurb">{{ result.blurb }}</div>
+
+  <div id="plotly-chart" style="width:100%; min-height:480px;"></div>
+
+  <details class="raw-data">
+    <summary>Raw Data ({{ result.records | length }} records)</summary>
+    {% if result.records %}
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead>
+          <tr>
+            {% for col in result.records[0].keys() %}
+            <th>{{ col }}</th>
+            {% endfor %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in result.records %}
+          <tr>
+            {% for val in row.values() %}
+            <td>{{ val }}</td>
+            {% endfor %}
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+  </details>
+</section>
+
+<script>
+  const records = {{ result.records | tojson }};
+  const xCol = {{ result.x_column | tojson }};
+  const yCol = {{ result.y_column | tojson }};
+
+  const x = records.map(r => r[xCol]);
+  const y = records.map(r => parseFloat(String(r[yCol]).replace(/,/g, '')) || null);
+
+  Plotly.newPlot('plotly-chart', [{
+    x, y,
+    type: 'scatter',
+    mode: 'lines',
+    line: { color: '#fff' },
+  }], {
+    paper_bgcolor: '#000',
+    plot_bgcolor: '#000',
+    font: { color: '#fff' },
+    xaxis: { title: xCol, gridcolor: '#222' },
+    yaxis: { title: yCol, gridcolor: '#222' },
+    margin: { t: 20, r: 20, b: 60, l: 80 },
+  });
+</script>
+{% endif %}
+{% endblock %}

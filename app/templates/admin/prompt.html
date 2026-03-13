@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}Prompt Detail — {{ session.question[:40] }}{% endblock %}
+
+{% block content %}
+<section class="hero">
+  <a href="/admin" class="back-link">← Back to Prompt Log</a>
+  <h1>Prompt Detail</h1>
+  <p class="admin-question">"{{ session.question }}"</p>
+  <div class="admin-meta">
+    <span>{{ session.timestamp[:19].replace("T", " ") }} UTC</span>
+    <span>{{ session.total_input_tokens | int }} input tokens</span>
+    <span>{{ session.total_output_tokens | int }} output tokens</span>
+  </div>
+</section>
+
+{% for stage in session.stages %}
+<section class="stage-card">
+  <div class="stage-header">
+    <span class="stage-name">{{ stage.stage | replace("_", " ") | title }}</span>
+    <span class="stage-model">{{ stage.model }}</span>
+    <span class="stage-tokens">{{ stage.input_tokens }} in / {{ stage.output_tokens }} out</span>
+  </div>
+
+  <div class="stage-section">
+    <div class="stage-label">Prompt</div>
+    <pre class="stage-pre">{{ stage.prompt }}</pre>
+  </div>
+
+  <div class="stage-section">
+    <div class="stage-label">Response</div>
+    <pre class="stage-pre">{{ stage.response }}</pre>
+  </div>
+</section>
+
+{% if stage.stage == "keyword_extraction" and session.search %}
+<section class="stage-card">
+  <div class="stage-header">
+    <span class="stage-name">Metadata Search</span>
+    <span class="stage-model">local · no model</span>
+    <span class="stage-tokens">
+      {{ session.search.keyword_count }} keyword{{ "s" if session.search.keyword_count != 1 }} →
+      {{ session.search.match_count }} endpoint{{ "s" if session.search.match_count != 1 }} matched
+    </span>
+  </div>
+
+  <div class="stage-section">
+    <div class="stage-label">Keywords</div>
+    <div class="keyword-list">
+      {% for kw in session.search.keywords %}
+      <span class="keyword-tag">{{ kw }}</span>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="stage-section">
+    <details>
+      <summary class="stage-label" style="cursor:pointer;">
+        Matched Endpoints ({{ session.search.match_count }})
+      </summary>
+      <ul class="endpoint-list">
+        {% for ep in session.search.matched_endpoints %}
+        <li class="mono">{{ ep }}</li>
+        {% endfor %}
+      </ul>
+    </details>
+  </div>
+</section>
+{% endif %}
+{% endfor %}
+{% endblock %}
