@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — Fiscal Data{% endblock %}
+
+{% block content %}
+<section class="dashboard-controls">
+  <label for="endpoint-select">Dataset</label>
+  <select id="endpoint-select"></select>
+  <button id="fetch-btn">Fetch &amp; Plot</button>
+</section>
+
+<section class="chart-area">
+  <div id="plotly-chart" style="width:100%; min-height:500px;"></div>
+</section>
+
+<section class="raw-data">
+  <details>
+    <summary>Raw JSON</summary>
+    <pre id="raw-json"></pre>
+  </details>
+</section>
+{% endblock %}

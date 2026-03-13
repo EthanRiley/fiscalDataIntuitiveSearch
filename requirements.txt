@@ -1,0 +1,16 @@
+# Core
+Flask==3.1.0
+gunicorn==23.0.0
+python-dotenv==1.1.0
+
+# Data & Visualization
+pandas==2.2.3
+plotly==6.0.1
+requests==2.32.3
+
+# AI Agent
+anthropic==0.52.0
+
+# Dev / Testing
+pytest==8.3.4
+pytest-cov==6.0.0

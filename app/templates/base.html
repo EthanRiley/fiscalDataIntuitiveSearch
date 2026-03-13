@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{% block title %}Fiscal Data Search{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
+</head>
+<body>
+  <nav class="topbar">
+    <a href="/" class="logo">FiscalData Search</a>
+    <div class="nav-links">
+      <a href="/">Home</a>
+      <a href="/dashboard">Dashboard</a>
+    </div>
+  </nav>
+
+  <main class="container">
+    {% block content %}{% endblock %}
+  </main>
+
+  <!-- Agent chat widget (persistent across pages) -->
+  <div id="agent-widget" class="agent-widget collapsed">
+    <button id="agent-toggle" class="agent-toggle" aria-label="Toggle assistant">💬</button>
+    <div class="agent-panel">
+      <div class="agent-header">Fiscal Data Assistant</div>
+      <div id="agent-messages" class="agent-messages"></div>
+      <div class="agent-input-row">
+        <input id="agent-input" type="text" placeholder="Ask about U.S. fiscal data…" autocomplete="off" />
+        <button id="agent-send">Send</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+</body>
+</html>
