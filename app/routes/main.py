@@ -1,6 +1,7 @@
 from flask import Blueprint, render_template, request, current_app, jsonify, abort
 from app.services.agent_service import AgentService
 from app.services.fiscal_data import FiscalDataClient
+from app.services.data_utils import filter_by_periodicity
 from app.services import token_logger
 
 main_bp = Blueprint("main", __name__)
@@ -20,9 +21,11 @@ def dashboard():
 
 @main_bp.route("/chat", methods=["GET", "POST"])
 def chat():
-    """Agent-driven chart + blurb page."""
+    """Agent-driven multi-chart page."""
     question = None
-    result = None
+    charts = []
+    blurb = None
+    api_calls = []
     error = None
     session_id = None
 
@@ -30,32 +33,66 @@ def chat():
         question = request.form.get("question", "").strip()
         if question:
             service = AgentService(current_app.config)
-            spec, session_id = service.build_chart_spec(question)
+            specs, session_id = service.build_chart_specs(question)
 
-            if "error" in spec:
-                error = spec["error"]
+            if specs and "error" in specs[0]:
+                error = specs[0]["error"]
             else:
                 client = FiscalDataClient(current_app.config["FISCAL_DATA_BASE_URL"])
-                params = {
-                    "sort": spec.get("sort", "record_date"),
-                    "page[size]": "10000",
-                }
-                if spec.get("filters"):
-                    params["filter"] = spec["filters"]
+                summaries = []
 
-                data, fetch_error = client.fetch(spec["endpoint"], params)
-                if fetch_error:
-                    error = fetch_error
-                else:
-                    records = data.get("data", [])
-                    result = {
-                        "blurb": spec.get("blurb", ""),
+                for spec in specs:
+                    # ── Visualization fetch ──────────────────────
+                    viz_params = {
+                        "sort": spec.get("viz_sort", "record_date"),
+                        "page[size]": "10000",
+                    }
+                    if spec.get("viz_filters"):
+                        viz_params["filter"] = spec["viz_filters"]
+
+                    viz_data, viz_error = client.fetch(spec["endpoint"], viz_params)
+
+                    api_calls.append({
+                        "label": spec.get("title", spec["endpoint"]),
+                        "endpoint": spec["endpoint"],
+                        "params": viz_params,
+                    })
+
+                    if viz_error:
+                        continue
+
+                    viz_records = viz_data.get("data", [])
+
+                    # ── Filter viz data by periodicity for analyst ──
+                    periodicity = spec.get("periodicity", "year")
+                    analysis_records = filter_by_periodicity(
+                        viz_records, spec.get("x_column", "record_date"), periodicity
+                    )
+
+                    summaries.append({
+                        "title": spec.get("title", spec["endpoint"]),
+                        "records": analysis_records,
+                    })
+
+                    charts.append({
+                        "title": spec.get("title", ""),
                         "x_column": spec.get("x_column", ""),
                         "y_column": spec.get("y_column", ""),
-                        "records": records,
-                    }
+                        "records": viz_records,
+                    })
 
-    return render_template("chat.html", question=question, result=result, error=error, session_id=session_id)
+                if summaries:
+                    blurb = service.build_analysis(question, summaries, session_id)
+
+    return render_template(
+        "chat.html",
+        question=question,
+        charts=charts,
+        blurb=blurb,
+        api_calls=api_calls,
+        error=error,
+        session_id=session_id,
+    )
 
 
 @main_bp.route("/admin")

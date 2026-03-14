@@ -57,23 +57,35 @@ Candidate endpoints:
 
 Output:"""
 
-CHART_SPEC_PROMPT = """\
-You are a fiscal-data analyst. The user has asked a question about U.S. Treasury data.
+CHART_SPECS_PROMPT = """\
+You are a fiscal-data chart planner. The user has asked a question about U.S. Treasury data.
 Below is a filtered list of the most relevant API endpoints and their fields.
 
 Today's date is {today}. Use this to calculate exact start dates for any time range the user mentions.
 
-Your job is to respond with ONLY a valid JSON object — no markdown, no explanation — with these keys:
-  blurb     : string  — a clear, concise plain-language answer to the user's question (2-4 sentences)
-  endpoint  : string  — the API endpoint path to query (e.g. v2/accounting/od/debt_to_penny)
-  x_column  : string  — the field name to use as the x axis
-  y_column  : string  — the field name to use as the y axis
-  filters   : string  — a Fiscal Data filter expression covering EXACTLY the time range the user asked for,
-                        in the format record_date:gte:YYYY-MM-DD. Calculate the start date yourself from
-                        today's date. If the user mentions no time range, return an empty string.
-  sort      : string  — sort expression for time-series data (e.g. record_date)
+Your job is to respond with ONLY a valid JSON array — no markdown, no explanation.
+Each element represents one chart and must have these keys:
 
-IMPORTANT: The filter is the only thing controlling how much data is returned. Be precise.
+  title       : string  — short descriptive chart title
+  endpoint    : string  — API endpoint path (e.g. v2/accounting/od/debt_to_penny)
+  x_column    : string  — field name for the x axis (usually a date field)
+  y_column    : string  — field name for the y axis
+  viz_filters : string  — Fiscal Data filter covering EXACTLY the user's time range,
+                          format record_date:gte:YYYY-MM-DD calculated from today.
+                          Empty string if no time range specified.
+  viz_sort    : string  — sort for the fetch (e.g. record_date for ascending)
+  periodicity : string  — the natural time grouping for this question's scope.
+                          Must be one of: decade, year, month, week, day.
+                          Choose the periodicity that matches the question's time range:
+                          - decade: 20+ years
+                          - year: 2-20 years
+                          - month: 1 month to 2 years
+                          - week: 1 week to 3 months
+                          - day: less than 1 week or asking for daily granularity
+
+The visualization data will be filtered to one record per period using `periodicity`,
+and that filtered data will be passed to an analyst agent to write the summary blurb.
+Generate as many charts as genuinely needed — usually 1, sometimes 2-3 for comparative questions.
 
 METADATA:
 {metadata}
@@ -81,6 +93,18 @@ METADATA:
 USER QUESTION:
 {question}
 """
+
+ANALYSIS_PROMPT = """\
+You are a fiscal-data analyst. Answer the user's question based solely on the real data summaries below.
+Write 2-4 clear, concise sentences. Cite specific numbers and date ranges. Do not guess or extrapolate.
+
+USER QUESTION:
+{question}
+
+DATA SUMMARIES:
+{summaries}
+
+Answer:"""
 
 
 SYSTEM_PROMPT = """\
@@ -222,17 +246,18 @@ class AgentService:
         except json.JSONDecodeError:
             return candidates
 
-    # ── Chart spec (Option A — structured JSON response) ────────
+    # ── Chart specs ──────────────────────────────────────────
 
-    def build_chart_spec(self, question: str) -> tuple[dict, str]:
+    def build_chart_specs(self, question: str) -> tuple[list, str]:
         """
-        Two-stage pipeline:
-          1. Extract keywords from the question (Haiku, cheap).
-          2. Filter metadata down to the most relevant endpoints.
-          3. Ask Sonnet to pick the best endpoint/columns and write a blurb.
+        Full pipeline:
+          1. Haiku: extract keywords
+          2. Local: filter metadata via search()
+          3. Haiku: rank to minimum needed endpoints
+          4. Sonnet: produce list of chart specs (viz + analysis params per chart)
 
-        Returns (spec_dict, session_id).
-        On failure spec_dict contains {"error": "..."}.
+        Returns (specs_list, session_id).
+        On error specs_list is [{"error": "..."}].
         """
         session_id = token_logger.start_session(question)
         keywords = self.extract_keywords(question, session_id)
@@ -245,12 +270,11 @@ class AgentService:
         )
 
         if not relevant_metadata:
-            return {"error": "Could not find any relevant datasets for that question."}, session_id
+            return [{"error": "Could not find any relevant datasets for that question."}], session_id
 
-        # Stage 3: rank down to top 5 with a second cheap Haiku call
         ranked_metadata = self.rank_endpoints(question, relevant_metadata, session_id)
 
-        prompt = CHART_SPEC_PROMPT.format(
+        prompt = CHART_SPECS_PROMPT.format(
             today=date.today().isoformat(),
             metadata=json.dumps(ranked_metadata, indent=2),
             question=question,
@@ -258,7 +282,7 @@ class AgentService:
 
         response = self.client.messages.create(
             model=self.model,
-            max_tokens=1024,
+            max_tokens=2048,
             messages=[{"role": "user", "content": prompt}],
         )
         text = "".join(
@@ -266,7 +290,7 @@ class AgentService:
         ).strip()
         token_logger.record_stage(
             session_id=session_id,
-            stage="chart_spec",
+            stage="chart_specs",
             model=self.model,
             input_tokens=response.usage.input_tokens,
             output_tokens=response.usage.output_tokens,
@@ -275,9 +299,47 @@ class AgentService:
         )
 
         try:
-            return json.loads(text), session_id
+            specs = json.loads(text)
+            if isinstance(specs, list):
+                return specs, session_id
+            return [{"error": f"Agent returned unexpected structure: {text}"}], session_id
         except json.JSONDecodeError:
-            return {"error": f"Agent returned invalid JSON: {text}"}, session_id
+            return [{"error": f"Agent returned invalid JSON: {text}"}], session_id
+
+    # ── Analysis blurb ───────────────────────────────────────
+
+    def build_analysis(self, question: str, summaries: list[dict], session_id: str) -> str:
+        """
+        Sonnet analyst: receives compact data summaries and writes a blurb.
+        Each summary is {"title": ..., "records": [...]}.
+        Returns the blurb string.
+        """
+        summary_text = ""
+        for s in summaries:
+            summary_text += f"\n{s['title']}:\n"
+            for row in s["records"]:
+                summary_text += "  " + ", ".join(f"{k}: {v}" for k, v in row.items()) + "\n"
+
+        prompt = ANALYSIS_PROMPT.format(question=question, summaries=summary_text.strip())
+
+        response = self.client.messages.create(
+            model=self.model,
+            max_tokens=512,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = "".join(
+            block.text for block in response.content if block.type == "text"
+        ).strip()
+        token_logger.record_stage(
+            session_id=session_id,
+            stage="analysis",
+            model=self.model,
+            input_tokens=response.usage.input_tokens,
+            output_tokens=response.usage.output_tokens,
+            prompt=prompt,
+            response=text,
+        )
+        return text
 
     # ── Synchronous (non-streaming) ──────────────────────────
 

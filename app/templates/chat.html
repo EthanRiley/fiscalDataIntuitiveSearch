@@ -24,26 +24,34 @@
 <div class="chat-error">{{ error }}</div>
 {% endif %}
 
-{% if result %}
+{% if blurb %}
 <section class="chat-result">
-  <div class="chat-blurb">{{ result.blurb }}</div>
+  <div class="chat-blurb">{{ blurb }}</div>
+</section>
+{% endif %}
 
-  <div id="plotly-chart" style="width:100%; min-height:480px;"></div>
+{% for chart in charts %}
+<section class="chat-result">
+  {% if chart.title %}
+  <h2 class="chart-title">{{ chart.title }}</h2>
+  {% endif %}
+
+  <div id="plotly-chart-{{ loop.index }}" style="width:100%; min-height:480px;"></div>
 
   <details class="raw-data">
-    <summary>Raw Data ({{ result.records | length }} records)</summary>
-    {% if result.records %}
+    <summary>Raw Data ({{ chart.records | length }} records)</summary>
+    {% if chart.records %}
     <div class="table-wrap">
       <table class="data-table">
         <thead>
           <tr>
-            {% for col in result.records[0].keys() %}
+            {% for col in chart.records[0].keys() %}
             <th>{{ col }}</th>
             {% endfor %}
           </tr>
         </thead>
         <tbody>
-          {% for row in result.records %}
+          {% for row in chart.records %}
           <tr>
             {% for val in row.values() %}
             <td>{{ val }}</td>
@@ -58,14 +66,13 @@
 </section>
 
 <script>
-  const records = {{ result.records | tojson }};
-  const xCol = {{ result.x_column | tojson }};
-  const yCol = {{ result.y_column | tojson }};
-
+(function() {
+  const records = {{ chart.records | tojson }};
+  const xCol = {{ chart.x_column | tojson }};
+  const yCol = {{ chart.y_column | tojson }};
   const x = records.map(r => r[xCol]);
   const y = records.map(r => parseFloat(String(r[yCol]).replace(/,/g, '')) || null);
-
-  Plotly.newPlot('plotly-chart', [{
+  Plotly.newPlot('plotly-chart-{{ loop.index }}', [{
     x, y,
     type: 'scatter',
     mode: 'lines',
@@ -78,6 +85,29 @@
     yaxis: { title: yCol, gridcolor: '#222' },
     margin: { t: 20, r: 20, b: 60, l: 80 },
   });
+})();
 </script>
+{% endfor %}
+
+{% if api_calls %}
+<section class="chat-result">
+  <details class="raw-data">
+    <summary>API Calls ({{ api_calls | length }})</summary>
+    <div class="api-call-list">
+      {% for call in api_calls %}
+      <div class="api-call-item">
+        <div class="api-call-label">{{ call.label }}</div>
+        <div class="api-call-endpoint mono">{{ call.endpoint }}</div>
+        <div class="api-call-params">
+          {% for k, v in call.params.items() %}
+          <span class="api-param"><span class="api-param-key">{{ k }}</span>={{ v }}</span>
+          {% endfor %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </details>
+</section>
 {% endif %}
+
 {% endblock %}
